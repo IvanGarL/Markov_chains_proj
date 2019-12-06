@@ -80,9 +80,14 @@ ui <- fluidPage(
             tabsetPanel(
                 id = 'dataset',
                 tabPanel("Fase 1", plotOutput("sesionesplot")),
-                tabPanel("Fase 2", plotOutput("distPlot"), plotOutput("costsPlot"))
-                #tabPanel("Fase 3 - Heatmap política óptima",),
-                #tabPanel("Fase 3 - Tabla de decisiones óptimas",)
+                tabPanel("Fase 2", plotOutput("distPlot"), plotOutput("costsPlot")),
+                tabPanel("Fase 3", 
+                         textOutput("e_optimo"),
+                         h4("Mapa de calor de Politica optima"),
+                         d3heatmapOutput("heatmap", width = "100%", height="600px"),
+                         h4("Tabla de decisiones optimas"),
+                         DT::dataTableOutput("tabla_opt")
+                         )
             )
         )
     )
@@ -287,6 +292,7 @@ server <- function(input, output) {
         return(costoEstimado)
     }
     
+    #---server output - distplot:
     output$distPlot <- renderPlot({
         
         #INPUTS:
@@ -310,6 +316,7 @@ server <- function(input, output) {
         
     })
     
+    #---server output - costsplot:
     output$costsPlot <- renderPlot({
         #Valores fijos de parametros: limites y costos
         #Limites, media y pbinomial
@@ -368,15 +375,272 @@ server <- function(input, output) {
         text( bar, data, labels = round(data, 3), pos = 3, adj = 1)
         
     })
-    
     #Funciones ----------------FIN FASE 2:
     
     #Funciones ------------EMPIEZA FASE 3:
+    setUpSDP <- function(){
+        #Espacio de estados
+        
+        estados<-c(1,2,3,4,5,6,7)
+        names(estados)<-c("Sana","VPH", "Estadio1",  "Estadio2", "Estadio3", "Estadio4", "Fallecida")
+        
+        #INPUTS:
+        edad_inicial = 1
+        estado_inic = 1
+        
+        #Conjunto de epocas
+        epocas<-seq(1,50, by=1)
+        
+        #Conjunto de decisiones
+        A<-c("Esperar", "Medicamento", "Radioterapia", "Quimioterapia")
+        
+        #Carga de matrices de probabilidad
+        esperar <- read.csv(file = "m_esperar.csv", sep = ",")
+        medicamento <- read.csv(file = "m_medicamento.csv", sep = ",")
+        quimio <- read.csv(file = "m_quimio.csv", sep = ",")
+        radio <- read.csv(file = "m_radio.csv", sep = ",")
+        
+        #Convertimos cada matriz a Dataframe
+        matEsp = as.matrix(esperar, rownames.force = FALSE)
+        matMed = as.matrix(medicamento, rownames.force = TRUE)
+        matQuim = as.matrix(quimio, rownames.force = TRUE)
+        matRad = as.matrix(radio, rownames.force = TRUE)
+        
+        #Rotulamos cada columna
+        rownames(matEsp)<-names(estados)
+        colnames(matEsp)<-names(estados)
+        rownames(matMed)<-names(estados)
+        colnames(matMed)<-names(estados)
+        rownames(matQuim)<-names(estados)
+        colnames(matQuim)<-names(estados)
+        rownames(matRad)<-names(estados)
+        colnames(matRad)<-names(estados)
+        
+        #Definicion de vectores de retorno inmediato para cada decision en cada estado.
+        rEsperar<-c(1, 0.98, 0.65, 0.67, 0.5, 0.2, 0)
+        names(rEsperar)<-estados
+        
+        rMedicamento<-(0.95)
+        
+        rRadioterapia<-c(0.8, 0.7)
+        names(rRadioterapia)<-c("Estado1", "Estado2")
+        
+        rQuimioterapia<-c(0.75, 0.65, 0.5)
+        names(rQuimioterapia)<-c("Estado2", "Estado3", "Estado4")
+        
+        
+        #Crear tabla de estados y retornos innmediatos
+        tablaRetornos<-matrix(0,ncol=5, nrow=7, byrow = TRUE)
+        colnames(tablaRetornos)<-c("Estado", "RetEsperar", "RetMedicamento", "RetRadioterapia", "RetQuimioterapia")
+        for (i in (1:7)) {
+            tablaRetornos[i,1]=names(estados[i])
+        }
+        for (i in (1:7)) {
+            tablaRetornos[i,2]=rEsperar[i]
+        }
+        tablaRetornos[2,3]=0.95
+        for (i in (1:2)) {
+            tablaRetornos[i+2,4]=rRadioterapia[i]
+        }
+        for (i in (1:3)) {
+            tablaRetornos[i+3,5]=rQuimioterapia[i]
+        }
+        
+        Tmax <- 50
+        #creamos la  matriz de retornos para cada una de las epocas
+        Ft <- matrix(0,nrow=7,ncol=Tmax)
+        
+        #Matriz para guardar las decisiones óptimas para cada una de las épocas
+        Mat_Dec<-matrix(0,nrow=7,ncol=Tmax)
+        
+        #Matriz Q de retornos posibles para la ultima epoca 
+        Q<- matrix(0,nrow=7,ncol=length(A))
+        colnames(Q)<-A
+        Q<- tablaRetornos[,2:5]
+        
+        #Se guardan la solucion optima de la ultima etapa para cada estado
+        Ft[,Tmax] <- apply(Q, 1, max)
+        
+        #Decisiones optimas para cada estado para cada etapa/epoca
+        dec_opt_por_etapa<-c()
+        
+        #Recorrido para determinar cuales son las decisiones optimas para cada estado
+        for(j in 1:7){
+            dec_opt_por_etapa<- c(dec_opt_por_etapa,A[which.max(Q[j,])])  
+        }
+        
+        #Guardamos el vector de decisiones optimas en la última época
+        Mat_Dec[,Tmax]<-dec_opt_por_etapa
+        
+        #Se define el factor de descuento
+        factordesc <- 1
+        
+        #Iteraciones desde la época 49 hasta la época 1
+        for (t in (Tmax-1):1) {
+            
+            #Inicializamos la matriz de retornos de la presente época
+            Q <- array(0, dim=c(7,length(A)))
+            
+            #Recorro sobre decisiones y estados
+            for (i in 1:length(A)) {
+                for (j in 1:7) {
+                    #Si la decision es esperar
+                    if(A[i]=="Esperar"){
+                        MatProb<-matEsp
+                        Q[j,i] <- as.numeric(tablaRetornos[j,2]) + factordesc*
+                            (MatProb[j,] %*% 
+                                 as.numeric(Ft[,t+1]))     
+                    }
+                    #Si la decision es tomar el medicamento
+                    else if(A[i]=="Medicamento"){
+                        MatProb<-matMed
+                        Q[j,i] <- as.numeric(tablaRetornos[j,3]) + factordesc*
+                            (MatProb[j,] %*% 
+                                 as.numeric(Ft[,t+1]))     
+                    }
+                    #Si la decision es ir a Radioterapia
+                    else if(A[i]=="Radioterapia"){
+                        MatProb<-matRad
+                        Q[j,i] <- as.numeric(tablaRetornos[j,4]) + factordesc*
+                            (MatProb[j,] %*% 
+                                 as.numeric(Ft[,t+1]))      
+                    }
+                    #Si la decision es ir a Quimioterapia
+                    else if(A[i]=="Quimioterapia"){
+                        MatProb<-matQuim
+                        Q[j,i] <- as.numeric(tablaRetornos[j,5]) + factordesc*
+                            (MatProb[j,] %*% 
+                                 as.numeric(Ft[,t+1]))
+                    }
+                    #Si no es posible tomar una decisión se penaliza el retorno inmediato(-999999999).
+                    else{
+                        Q[j,i]<- -999999999
+                    }
+                }  
+            }
+            
+            #Encontramos el vector de valores asociados a las decisiones optimas
+            Ft[,t] <- apply(Q, 1, max)
+            #Identificar la decision optima para cada estado en la presente etapa
+            dec_opt_por_etapa<-c()
+            for(j in 1:7){
+                dec_opt_por_etapa<- c(dec_opt_por_etapa,A[which.max(Q[j,])])  
+            }
+            #Guardamos el vector de decisiones optimas de la presente época
+            Mat_Dec[,t]<-dec_opt_por_etapa
+        }
+        
+        matrices <- list(Ft, Mat_Dec, estado_inic, A, edad_inicial)
+        names(matrices) <- c("Ft", "Mat_Dec", "estado_inic", "A", "edad_inicial")
+        
+        return(matrices)
+    } 
     
+    drawHeatMap <- function (){
+        mats <- setUpSDP()
+        Mat_Dec <- mats[["Mat_Dec"]]
+        A <- unlist(mats["A"][1], use.names = FALSE)
+        
+        
+        # PRIMER OUTPUT
+        # VALOR ESPERADO DE VIDA  
+        #
+        Mat_Dec_map = matrix(0, nrow = 7, ncol = 50)
+        for(state in 1:7){
+            for(time in 1:50){
+                dec = which(A==Mat_Dec[state,time])
+                Mat_Dec_map[state,time] = dec
+            }
+        }
+        
+        #Se crea la grafica para exponer la politica optima.
+        return(d3heatmap(Mat_Dec_map, scale = "column",
+                         colors = "Spectral",
+                         dendrogram = "none",
+                         Rowv = FALSE,
+                         Colv = FALSE)
+        )
+    }
+    
+    #---server output - e_optimo:
+    output$e_optimo <- renderText({
+        mats <- setUpSDP()
+        Ft <- mats[["Ft"]]
+        estado_inic <- unlist(mats["estado_inic"][1], use.names = FALSE)
+        edad_inicial <- unlist(mats["edad_inicial"][1], use.names = FALSE)
+        
+        resp = paste("El valor esperado de la esperanza de vida segun los parametros es: ", Ft[estado_inic, edad_inicial])
+        return(resp) #Valor esperado de la espectativa de vida para los input de la app
+    })
+    
+    #---server output - heatmap:
+    output$heatmap <- renderD3heatmap({
+        drawHeatMap()
+    })
+    
+    
+    #---server output - tabla_opt:
+    output$tabla_opt <- DT::renderDataTable({
+        mats <- setUpSDP()
+        Mat_Dec <- mats[["Mat_Dec"]]
+        estado_inic <- unlist(mats["estado_inic"][1], use.names = FALSE)
+        
+        #
+        #PROCESO DE HALLAR LA POLITICA OPTIMA
+        #
+        #Creamos la matriz para guardar la política óptima
+        Pol_Opt = matrix(0,nrow = 1,ncol=3)
+        colnames(Pol_Opt)=c("Epoca", "Estado","Decision")
+        
+        #Muestras aleatorias.
+        getRandomState <- function(est_act, decs){
+            
+            if(est_act == 1 & decs == "Esperar"){
+                samp = sample(1:2, replace = F)
+                return(samp[1])
+            }
+            if(est_act == 2 & (decs == "Esperar" || decs == "Medicamento")){
+                samp = sample(1:3, replace = F)
+                return(samp[1])
+            }
+            if(est_act == 3 & (decs == "Esperar" || decs == "Radioterapia")){
+                samp = sample(2:4, replace = F)
+                return(samp[1])
+            }
+            if(est_act == 4 & (decs == "Esperar" || decs == "Radioterapia" || decs == "Quimioterapia")){
+                samp = sample(2:4, replace = F)
+                return(samp[1])
+            }
+            if(est_act == 5 & (decs == "Esperar" || decs == "Quimioterapia")){
+                samp = sample(5:6, replace = F)
+                return(samp[1])
+            }
+            if(est_act == 6 & (decs == "Esperar" || decs == "Quimioterapia")){
+                samp = sample(6:7, replace = F)
+                return(samp[1])
+            }
+        }
+        
+        #creamos vectores auxiliares para guardar temporalmente 
+        #la decisión y estado de llegada para cada época
+        decisiones=c()
+        estadollegada= -1;
+        estado_epoca_actual = estado_inic
+        Tmax <- 50
+        
+        for(epoca in 1:Tmax){
+            decision <- Mat_Dec[estado_epoca_actual, epoca]
+            decisiones[epoca] = decision
+            
+            estadollegada = getRandomState(estado_epoca_actual, decision)
+            
+            Pol_Opt = rbind(Pol_Opt, c(epoca,estado_epoca_actual, decision))
+            estado_epoca_actual <- estadollegada
+        }
+        
+        return(DT::datatable(Pol_Opt))
+    })
     #Funciones ----------------FIN FASE 3:
-    
-    
-    
 }
 
 # Run the application 
