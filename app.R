@@ -266,6 +266,7 @@ server <- function(input, output) {
         return(cmtdActual)
     }
     
+    #Estima el costo de la politica segun los parametros 
     estimateCosts <- function(stSts, cost_prov, cost_domc, cost_invt, u, k, m){
         
         estados = c(-u:k)
@@ -385,8 +386,8 @@ server <- function(input, output) {
         names(estados)<-c("Sana","VPH", "Estadio1",  "Estadio2", "Estadio3", "Estadio4", "Fallecida")
         
         #INPUTS:
-        edad_inicial = 1
-        estado_inic = 1
+        edad_inicial = (input$edad - 29)
+        estado_inic = estados[input$est_ini]
         
         #Conjunto de epocas
         epocas<-seq(1,50, by=1)
@@ -566,8 +567,8 @@ server <- function(input, output) {
     output$e_optimo <- renderText({
         mats <- setUpSDP()
         Ft <- mats[["Ft"]]
-        estado_inic <- unlist(mats["estado_inic"][1], use.names = FALSE)
-        edad_inicial <- unlist(mats["edad_inicial"][1], use.names = FALSE)
+        estado_inic <- mats[["estado_inic"]]
+        edad_inicial <- mats[["edad_inicial"]]
         
         resp = paste("El valor esperado de la esperanza de vida segun los parametros es: ", Ft[estado_inic, edad_inicial])
         return(resp) #Valor esperado de la espectativa de vida para los input de la app
