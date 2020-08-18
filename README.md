@@ -18,5 +18,4 @@ Have into account:
 
 License
 ----
-
-Apache 2.0 
+MIT
